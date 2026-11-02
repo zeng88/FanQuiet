@@ -6,12 +6,14 @@ public enum ProcessListViewState {
     case empty
     case failed(String)
 
-    public var rows: [ProcessSnapshot] {
-        switch self {
-        case .loaded(let snapshots): return Array(snapshots.sorted { $0.cpuPercent > $1.cpuPercent }.prefix(15))
-        case .loading, .empty, .failed: return []
-        }
+    public func visibleRows(currentUID: UInt32) -> [ProcessSnapshot] {
+        guard case .loaded(let snapshots) = self else { return [] }
+        return Array(snapshots.filter {
+            TerminationPolicy.decision(for: $0, currentUID: currentUID) == .allowed
+        }.sorted { $0.cpuPercent > $1.cpuPercent }.prefix(15))
     }
 
-    public var topProcess: ProcessSnapshot? { rows.first }
+    public func topProcess(currentUID: UInt32) -> ProcessSnapshot? {
+        visibleRows(currentUID: currentUID).first
+    }
 }

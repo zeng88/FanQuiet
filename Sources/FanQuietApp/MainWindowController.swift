@@ -6,8 +6,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     private var state: ProcessListViewState = .loading
     private var refreshTimer: Timer?
     private var isLoading = false
+    private var pendingResult: ProcessListViewState?
+    private var visibleRows: [ProcessSnapshot] = []
     private let headline = NSTextField(labelWithString: "正在读取进程…")
-    private let detail = NSTextField(labelWithString: "每 3 秒刷新一次。结束操作仅发送 SIGTERM。")
+    private let detail = NSTextField(labelWithString: "每 5 秒刷新；选中进程时暂停。只显示当前用户可结束的进程。")
     private let status = NSTextField(labelWithString: "")
     private let table = NSTableView()
     private let scroll = NSScrollView()
@@ -31,7 +33,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
     override func showWindow(_ sender: Any?) {
         super.showWindow(sender)
         refreshTimer?.invalidate()
-        refreshTimer = Timer.scheduledTimer(timeInterval: 3, target: self, selector: #selector(refresh), userInfo: nil, repeats: true)
+        refreshTimer = Timer.scheduledTimer(timeInterval: 5, target: self, selector: #selector(automaticRefresh), userInfo: nil, repeats: true)
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -45,7 +47,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         detail.textColor = .secondaryLabelColor
         status.textColor = .secondaryLabelColor
         refreshButton.target = self
-        refreshButton.action = #selector(refresh)
+        refreshButton.action = #selector(refreshAction)
         terminateButton.target = self
         terminateButton.action = #selector(terminateSelected)
         for (title, identifier, width) in [("进程", "name", 250.0), ("PID", "pid", 70.0), ("CPU", "cpu", 85.0), ("内存", "memory", 85.0), ("运行时长", "time", 100.0), ("状态", "status", 190.0)] {
@@ -87,11 +89,28 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         ])
     }
 
+    @objc private func automaticRefresh() {
+        guard table.selectedRow < 0 else { return }
+        refresh()
+    }
+
+    @objc private func refreshAction() {
+        if table.selectedRow >= 0 { table.deselectAll(nil) }
+        if let pending = pendingResult {
+            state = pending
+            pendingResult = nil
+            render()
+        }
+        refresh()
+    }
+
     @objc private func refresh() {
         guard !isLoading else { return }
         isLoading = true
-        state = .loading
-        render()
+        switch state {
+        case .loaded, .empty, .failed: status.stringValue = "正在刷新；保留当前列表…"
+        case .loading: render()
+        }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self else { return }
             let result: ProcessListViewState
@@ -100,14 +119,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
                 result = snapshots.isEmpty ? .empty : .loaded(snapshots)
             } catch { result = .failed(error.localizedDescription) }
             DispatchQueue.main.async {
-                self.state = result
                 self.isLoading = false
+                if self.table.selectedRow >= 0 {
+                    self.pendingResult = result
+                    self.status.stringValue = "自动刷新已暂停；点击“恢复并刷新”后应用新数据。"
+                    self.updateTerminateButton()
+                    return
+                }
+                self.state = result
                 self.render()
             }
         }
     }
 
     private func render() {
+        visibleRows = state.visibleRows(currentUID: UInt32(geteuid()))
         table.reloadData()
         let minimumHeight = max(scroll.contentView.bounds.height, table.rowHeight * CGFloat(max(table.numberOfRows, 1)))
         table.setFrameSize(NSSize(width: scroll.contentSize.width, height: minimumHeight))
@@ -115,20 +141,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         case .loading: headline.stringValue = "正在读取进程…"; status.stringValue = ""
         case .empty: headline.stringValue = "暂时没有可显示的进程"; status.stringValue = ""
         case .failed(let message): headline.stringValue = "读取进程失败"; status.stringValue = message
-        case .loaded(let snapshots):
-            if let top = snapshots.first {
-                headline.stringValue = "CPU 最高：\(top.displayName)  ·  \(String(format: "%.1f", top.cpuPercent))%  ·  PID \(top.pid)"
-            } else { headline.stringValue = "暂时没有可显示的进程" }
-            status.stringValue = "显示前 \(min(snapshots.count, 15)) 个进程。结束操作会再次核对身份。"
+        case .loaded:
+            if let top = state.topProcess(currentUID: UInt32(geteuid())) {
+                headline.stringValue = "CPU 最高（可结束）：\(top.displayName)  ·  \(String(format: "%.1f", top.cpuPercent))%  ·  PID \(top.pid)"
+                status.stringValue = "显示 \(visibleRows.count) 个可结束进程；结束前会再次核对身份。"
+            } else {
+                headline.stringValue = "没有可安全结束的当前用户进程"
+                status.stringValue = "系统进程和其他用户进程已隐藏。"
+            }
         }
         updateTerminateButton()
     }
 
-    func numberOfRows(in tableView: NSTableView) -> Int { state.rows.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { visibleRows.count }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard let column = tableColumn, row < state.rows.count else { return nil }
-        let process = state.rows[row]
+        guard let column = tableColumn, row < visibleRows.count else { return nil }
+        let process = visibleRows[row]
         let identifier = column.identifier.rawValue
         let text: String
         switch identifier {
@@ -137,11 +166,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         case "cpu": text = String(format: "%.1f%%", process.cpuPercent)
         case "memory": text = String(format: "%.1f%%", process.memoryPercent)
         case "time": text = process.elapsedTime
-        case "status":
-            switch TerminationPolicy.decision(for: process, currentUID: geteuid()) {
-            case .allowed: text = "可结束（需确认）"
-            case .protected(let reason): text = "受保护：\(reason)"
-            }
+        case "status": text = "可结束（需确认）"
         default: text = ""
         }
         let cellID = NSUserInterfaceItemIdentifier("Cell-\(identifier)")
@@ -155,19 +180,28 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
         return cell
     }
 
-    func tableViewSelectionDidChange(_ notification: Notification) { updateTerminateButton() }
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        updateTerminateButton()
+        if table.selectedRow >= 0 {
+            status.stringValue = "已暂停自动刷新；点击“恢复并刷新”可更新列表。"
+        } else if !isLoading, case .loaded = state {
+            status.stringValue = "显示 \(visibleRows.count) 个可结束进程；结束前会再次核对身份。"
+        }
+    }
 
     private func updateTerminateButton() {
-        guard table.selectedRow >= 0, table.selectedRow < state.rows.count else {
+        let hasSelection = table.selectedRow >= 0 && table.selectedRow < visibleRows.count
+        refreshButton.title = hasSelection ? "恢复并刷新" : "立即刷新"
+        guard hasSelection else {
             terminateButton.isEnabled = false
             return
         }
-        terminateButton.isEnabled = TerminationPolicy.decision(for: state.rows[table.selectedRow], currentUID: geteuid()) == .allowed
+        terminateButton.isEnabled = TerminationPolicy.decision(for: visibleRows[table.selectedRow], currentUID: geteuid()) == .allowed
     }
 
     @objc private func terminateSelected() {
-        guard table.selectedRow >= 0, table.selectedRow < state.rows.count else { return }
-        let process = state.rows[table.selectedRow]
+        guard table.selectedRow >= 0, table.selectedRow < visibleRows.count else { return }
+        let process = visibleRows[table.selectedRow]
         guard TerminationPolicy.decision(for: process, currentUID: geteuid()) == .allowed else { updateTerminateButton(); return }
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -180,6 +214,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
             let terminator = ProcessTerminator(currentUID: geteuid(), snapshotLoader: { try self.provider.load() })
             try terminator.terminate(process)
             status.stringValue = "已向 \(process.displayName) 发送 SIGTERM。"
+            table.deselectAll(nil)
             refresh()
         } catch {
             let errorAlert = NSAlert()
@@ -187,6 +222,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTableV
             errorAlert.messageText = "无法结束进程"
             errorAlert.informativeText = error.localizedDescription
             errorAlert.runModal()
+            table.deselectAll(nil)
             refresh()
         }
     }
