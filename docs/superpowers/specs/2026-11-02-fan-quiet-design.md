@@ -56,18 +56,18 @@
 ## 技术结构
 
 - `ProcessSnapshotProvider`：调用系统 `ps` 获取一次快照，解析进程信息并按 CPU 排序。
-- `ProcessIdentity` / `ProcessInfo`：保存展示所需字段和用于二次核对的身份字段。
+- `ProcessSnapshot`：保存展示所需字段和用于二次核对的身份字段。
 - `TerminationPolicy`：纯逻辑判断能否结束并返回保护原因。
 - `ProcessTerminator`：二次核对身份后调用 `kill(pid, SIGTERM)`。
 - `MainWindowController`：构建 AppKit 窗口、展示快照、刷新状态和确认流程。
-- Swift Package Manager 构建纯 Swift 核心与测试；`build.sh` 将 AppKit 可执行文件封装为 `dist/FanQuiet.app`。
+- 系统 `swiftc` 直接构建核心、自测程序和 AppKit 应用；`build.sh` 将应用封装为 `dist/FanQuiet.app`，不依赖 SwiftPM 或 XCTest。
 
 ## 自测范围
 
 - 用固定 `ps` 输出样本验证进程解析、空字段/异常行处理、CPU 排序和展示截断。
 - 验证 PID 0/1、root、系统路径、关键进程名、其他 UID 均不能结束；普通当前用户进程可通过策略判断。
 - 验证进程身份变化时拒绝发信号；测试中不向真实进程发送信号。
-- 执行 `swift test` 和本地 `.app` 构建，检查生成的应用结构及最低系统版本声明。
+- 执行 `./self-test.sh` 和本地 `.app` 构建，检查生成的应用结构及最低系统版本声明；不要求安装完整 Xcode 或 SwiftPM 测试工具。
 
 ## 留给实现阶段的决定
 
