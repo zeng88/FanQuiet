@@ -6,4 +6,4 @@ if let filterIndex = arguments.firstIndex(of: "--filter"), arguments.count > fil
     filter = arguments[filterIndex + 1]
 }
 
-runSelfTests(ProcessSnapshotParserTests.cases + ProcessSnapshotProviderTests.cases + TerminationPolicyTests.cases + ProcessTerminatorTests.cases, filter: filter)
+runSelfTests(ProcessSnapshotParserTests.cases + ProcessSnapshotProviderTests.cases + TerminationPolicyTests.cases + ProcessTerminatorTests.cases + ProcessListViewStateTests.cases, filter: filter)
