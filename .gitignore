@@ -1,4 +1,16 @@
+# macOS
+.DS_Store
+
+# Build output
 .build/
 dist/
+DerivedData/
+.swiftpm/
+
+# Local Superpowers planning and isolated worktrees
 .superpowers/
 .worktrees/
+
+# Xcode user-specific state (if the project is opened in Xcode)
+xcuserdata/
+*.xcuserstate
